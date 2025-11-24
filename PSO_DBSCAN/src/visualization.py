@@ -6,11 +6,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from typing import Optional, List, Dict
 from pathlib import Path
-
+from sklearn.preprocessing import MinMaxScaler
 # ============================================================================
 # THEME CONFIGURATION (Neovim Style)
 # ============================================================================
-
+import math
 def set_neovim_style():
     """Applies a dark, Neovim-inspired style to Matplotlib globally."""
     plt.style.use('dark_background')
@@ -27,7 +27,14 @@ def set_neovim_style():
         'grid.linestyle': '--',
         'grid.alpha': 0.4
     })
-
+NVIM = {
+    'bg': '#1e1e1e',
+    'fg': '#c0caf5',
+    'cyan': '#7aa2f7',
+    'pink': '#f7768e',
+    'green': '#9ece6a',
+    'orange': '#e0af68'
+}
 # ============================================================================
 # PSO CONVERGENCE
 # ============================================================================
@@ -249,3 +256,217 @@ def plot_full_report(
         print(f"✓ Saved report: {save_path}")
     
     plt.show()
+    
+    
+    # [Append this to src/visualization.py]
+
+from sklearn.preprocessing import MinMaxScaler
+
+# Neovim Palette for Plotly
+NVIM = {
+    'bg': '#1e1e1e',
+    'fg': '#c0caf5',
+    'cyan': '#7aa2f7',
+    'pink': '#f7768e',
+    'green': '#9ece6a',
+    'orange': '#e0af68'
+}
+
+
+import pandas as pd
+import plotly.express as px
+import plotly.io as pio
+from pathlib import Path
+from typing import Optional
+
+# Opsional: Set default renderer agar muncul di browser/notebook/vscode
+# pio.renderers.default = "browser" 
+
+def plot_cluster_profiles(
+    df: pd.DataFrame, 
+    labels: list, 
+    output_path: str = "cluster_profiles.html", 
+    show_plot: bool = True,
+    logger = None
+):
+    """
+    Versi Robust: Menangani banyak fitur dengan dynamic spacing & height.
+    """
+    try:
+        # 1. Persiapan Data
+        plot_df = df.copy()
+        plot_df['Cluster'] = [str(l) for l in labels]
+        
+        # Urutkan cluster
+        if 'Cluster' in plot_df.columns:
+            plot_df.sort_values('Cluster', inplace=True)
+
+        # Melt data
+        df_melted = plot_df.melt(id_vars='Cluster', var_name='Feature', value_name='Value')
+        
+        # --- LOGIC ROBUST UNTUK LAYOUT ---
+        n_features = df_melted['Feature'].nunique()
+        cols_per_row = 3
+        
+        # Hitung jumlah baris yang akan terbentuk
+        n_rows = math.ceil(n_features / cols_per_row)
+        
+        # 1. Dynamic Height: 300 pixel per baris (minimal 600px total)
+        dynamic_height = max(600, n_rows * 350)
+        
+        # 2. Dynamic Spacing:
+        # Rumus batas plotly: spacing < 1 / (rows - 1)
+        # Kita pasang spacing yang aman (misal 50% dari batas maksimalnya)
+        if n_rows > 1:
+            max_spacing = 1 / (n_rows - 1)
+            # Pakai nilai terkecil antara 0.08 (standar) atau batas aman hitungan tadi
+            safe_spacing = min(0.08, max_spacing * 0.5) 
+        else:
+            safe_spacing = 0.08 # Default jika cuma 1 baris
+
+        # 3. Membuat Plot
+        fig = px.box(
+            df_melted, 
+            x='Cluster', 
+            y='Value', 
+            color='Cluster',
+            facet_col='Feature', 
+            facet_col_wrap=cols_per_row,
+            facet_row_spacing=safe_spacing, # <--- PENTING: Mencegah Error ValueError spacing
+            title=f"Cluster Profiles ({n_features} Features)",
+            template="plotly_dark",
+            height=dynamic_height # <--- PENTING: Agar gambar tidak gepeng
+        )
+        
+        # 4. Finishing Touches
+        fig.update_layout(
+            autosize=True,
+            margin=dict(l=50, r=50, b=50, t=80),
+            showlegend=False 
+        )
+        
+        # Bebaskan sumbu Y agar tiap fitur punya skala sendiri
+        fig.update_yaxes(matches=None, showticklabels=True)
+        # Rapikan label X agar tidak berulang-ulang
+        fig.update_xaxes(showticklabels=True)
+
+        # 5. Simpan & Tampilkan
+        output = Path(output_path)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        
+        fig.write_html(str(output))
+        
+        msg = f"Cluster profiles saved to: {output} (Features={n_features}, Rows={n_rows})"
+        if logger:
+            logger.success(msg)
+        else:
+            print(f"[INFO] {msg}")
+
+        if show_plot:
+            fig.show()
+
+    except Exception as e:
+        # Error handling yang lebih informatif tanpa crash total program jika hanya plotting yang gagal
+        err_msg = f"Failed to plot cluster profiles: {str(e)}"
+        if logger:
+            logger.error(err_msg)
+        else:
+            print(f"[ERROR] {err_msg}")
+        # Kita raise lagi jika ingin program berhenti, 
+        # atau bisa di-pass jika ingin program lanjut meski plot gagal.
+        raise e
+   
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from .clustering import DBSCAN  # Pastikan import DBSCAN anda benar
+from .optimization import _objective_wrapper # Import helper wrapper dari optimization.py
+
+def plot_objective_landscape(
+    X: np.ndarray, 
+    bounds: dict, 
+    objective_kwargs: dict, 
+    resolution: int = 20, # Grid 20x20 (Total 400x run DBSCAN, hati-hati jika data besar)
+    logger = None
+):
+    """
+    Memvisualisasikan permukaan Objective Function dalam 3D untuk melihat
+    apakah landscape-nya 'datar', 'berbukit', atau 'curam'.
+    """
+    if logger:
+        logger.info(f"Generating Objective Landscape ({resolution}x{resolution} grid)...")
+        logger.info("This might take a while depending on dataset size...")
+
+    # 1. Buat Grid Parameter
+    eps_vals = np.linspace(bounds['eps'][0], bounds['eps'][1], resolution)
+    min_samples_vals = np.linspace(bounds['min_samples'][0], bounds['min_samples'][1], resolution)
+    
+    # Meshgrid untuk plotting
+    Eps_grid, MinSamples_grid = np.meshgrid(eps_vals, min_samples_vals)
+    Fitness_grid = np.zeros_like(Eps_grid)
+
+    dbscan = DBSCAN()
+    
+    # 2. Hitung Fitness untuk setiap titik di Grid
+    # (Looping manual karena DBSCAN tidak bisa vectorization terhadap parameter)
+    total_steps = resolution * resolution
+    step = 0
+    
+    for i in range(resolution):
+        for j in range(resolution):
+            eps = Eps_grid[i, j]
+            # min_samples harus integer
+            ms = int(round(MinSamples_grid[i, j])) 
+            
+            # Run DBSCAN
+            labels = dbscan.fit(X, eps=eps, min_samples=ms)
+            
+            # Hitung Fitness
+            # Ingat: Kita ingin MINIMIZE fitness, jadi semakin kecil (negatif) semakin bagus.
+            # Namun visualisasi 3D biasanya "Puncak = Bagus". 
+            # Jadi nanti kita bisa visualisasikan -fitness atau tetap fitness asli (lembah = bagus).
+            fit_val = _objective_wrapper(
+                X=X, 
+                labels=labels, 
+                alpha=objective_kwargs.get('alpha', 0.2), 
+                beta=objective_kwargs.get('beta', 0.2), 
+                K_min=objective_kwargs.get('K_min', 3), 
+                K_max=objective_kwargs.get('K_max', 8)
+            )
+            
+            Fitness_grid[i, j] = fit_val
+            
+            step += 1
+            if step % 50 == 0 and logger:
+                # Simple log progress agar tidak dikira hang
+                print(f"Landscape scan: {step}/{total_steps} points calculated...")
+
+    # 3. Buat Plot 3D Interaktif
+    fig = go.Figure(data=[go.Surface(
+        z=Fitness_grid, 
+        x=Eps_grid, 
+        y=MinSamples_grid,
+        colorscale='Viridis_r', # Reverse colorscale (Lembah/Biru = Fitness Rendah/Bagus)
+        colorbar=dict(title='Fitness (Lower is Better)')
+    )])
+
+    fig.update_layout(
+        title='DBSCAN Optimization Landscape',
+        scene=dict(
+            xaxis_title='Epsilon (eps)',
+            yaxis_title='Min Samples',
+            zaxis_title='Objective Value (Fitness)'
+        ),
+        autosize=True,
+        height=800,
+        margin=dict(l=65, r=50, b=65, t=90)
+    )
+
+    # Tambahkan penjelasan cara baca
+    fig.add_annotation(
+        text="Lembah (Warna Biru/Ungu) = Solusi Terbaik.<br>Dataran Tinggi (Kuning) = Solusi Buruk.",
+        xref="paper", yref="paper",
+        x=0, y=1, showarrow=False
+    )
+
+    return fig
